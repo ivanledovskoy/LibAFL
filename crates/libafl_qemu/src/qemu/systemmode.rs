@@ -285,10 +285,46 @@ impl Qemu {
         }
     }
 
+    /// Fast (incremental) restore: only pages dirtied since the snapshot are rolled
+    /// back. Correct and cheap when this is the only snapshot being restored.
+    /// Like `create_fast_snapshot_filter` but lets the caller choose whether this
+    /// snapshot takes over the active bdrv (COW) cache. Only the FIRST snapshot may
+    /// do so (it MOVES the global `before_fuzz_cache`); any additional concurrent
+    /// snapshot must pass `is_active_bdrv_cache = false`, otherwise syx moves an
+    /// already-moved cache and crashes.
+    #[must_use]
+    pub fn create_fast_snapshot_filter_bdrv(
+        &self,
+        track: bool,
+        device_filter: &DeviceSnapshotFilter,
+        is_active_bdrv_cache: bool,
+    ) -> FastSnapshotPtr {
+        let mut v = vec![];
+        unsafe {
+            libafl_qemu_sys::syx_snapshot_new(
+                track,
+                is_active_bdrv_cache,
+                device_filter.enum_id(),
+                device_filter.devices(&mut v),
+            )
+        }
+    }
+
     #[expect(clippy::missing_safety_doc)]
     pub unsafe fn restore_fast_snapshot(&self, snapshot: FastSnapshotPtr) {
         unsafe {
-            libafl_qemu_sys::syx_snapshot_root_restore(snapshot);
+            libafl_qemu_sys::syx_snapshot_root_restore(snapshot, false);
+        }
+    }
+
+    /// Full restore: the snapshot's entire captured RAM is copied back. Needed to
+    /// switch cleanly to a snapshot whose incremental dirty list cannot account for
+    /// pages changed while a *different* snapshot was active (e.g. the discovery
+    /// root snapshot before the fuzzing snapshot). Slower but robust.
+    #[expect(clippy::missing_safety_doc)]
+    pub unsafe fn restore_fast_snapshot_full(&self, snapshot: FastSnapshotPtr) {
+        unsafe {
+            libafl_qemu_sys::syx_snapshot_root_restore(snapshot, true);
         }
     }
 
